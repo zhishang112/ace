@@ -273,7 +273,7 @@ impl BackendInstance {
         root: PathBuf,
         process_group: Option<Arc<crate::process_group::ProcessGroup>>,
     ) -> Result<Self, ProxyError> {
-        let mut cmd = build_command(config, &root)?;
+        let mut cmd = Self::build_command(config, &root)?;
 
         let mut child = cmd.spawn().map_err(|e| {
             ProxyError::BackendSpawnFailed(format!("Failed to spawn backend: {}", e))
