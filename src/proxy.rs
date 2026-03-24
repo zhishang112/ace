@@ -5,12 +5,13 @@ use crate::config::Config;
 use crate::error::{ProxyError, ERROR_BACKEND_SPAWN_FAILED, ERROR_BACKEND_UNAVAILABLE, ERROR_INTERNAL_ERROR};
 use crate::git_filter::{self, GitTrackedFiles};
 use crate::jsonrpc::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use crate::routing::{self, GitRootCache};
 use crate::throttle::EventThrottler;
 use lru::LruCache;
-use percent_encoding::percent_decode_str;
+
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -56,6 +57,8 @@ pub struct McpProxy {
     metrics_total_errors: u64,
     /// Metrics: start time for uptime calculation
     metrics_start_time: Instant,
+    /// Cache for git root detection results (avoids repeated sync I/O)
+    git_root_cache: GitRootCache,
 }
 
 impl McpProxy {
@@ -133,6 +136,7 @@ impl McpProxy {
             metrics_total_requests: 0,
             metrics_total_errors: 0,
             metrics_start_time: Instant::now(),
+            git_root_cache: GitRootCache::new(),
         })
     }
 
@@ -157,7 +161,11 @@ impl McpProxy {
         let mut throttle_tick = tokio::time::interval(throttle_interval);
         throttle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         throttle_tick.tick().await;
-        
+
+        // Signal handler for graceful shutdown
+        let ctrl_c = tokio::signal::ctrl_c();
+        tokio::pin!(ctrl_c);
+
         loop {
             msg.clear();
             
@@ -210,6 +218,11 @@ impl McpProxy {
 
                 _ = throttle_tick.tick() => {
                     self.flush_throttled_events().await;
+                }
+
+                _ = &mut ctrl_c => {
+                    info!("Received CTRL+C, shutting down gracefully");
+                    break;
                 }
             }
         }
@@ -271,7 +284,7 @@ impl McpProxy {
             // Check if this is a file change notification that should be throttled
             if self.should_throttle_notification(&request) {
                 if let Some(uri) = request.get_uri() {
-                    if let Some(path) = Self::uri_to_path(&uri) {
+                    if let Some(path) = routing::uri_to_path(&uri) {
                         // Apply git filter if enabled
                         if self.config.git_filter {
                             if !self.is_path_git_tracked(&path).await {
@@ -316,7 +329,7 @@ impl McpProxy {
             info!("Received roots: {:?}", roots);
             self.roots = roots
                 .into_iter()
-                .filter_map(|uri| Self::uri_to_path(&uri))
+                .filter_map(|uri| routing::uri_to_path(&uri))
                 .collect();
             
             // Set default root to first root if not configured
@@ -361,7 +374,7 @@ impl McpProxy {
             info!("Roots changed: {:?}", roots);
             self.roots = roots
                 .into_iter()
-                .filter_map(|uri| Self::uri_to_path(&uri))
+                .filter_map(|uri| routing::uri_to_path(&uri))
                 .collect();
         }
     }
@@ -423,61 +436,16 @@ impl McpProxy {
     }
 
     /// Determine which root to use for a request
-    fn determine_root(&self, request: &JsonRpcRequest) -> Option<PathBuf> {
-        // Try to extract URI from request and match to a root
-        if let Some(uri) = request.get_uri() {
-            if let Some(path) = Self::uri_to_path(&uri) {
-                // Find longest prefix match among known roots
-                let matched = self.roots.iter()
-                    .filter(|root| path.starts_with(root))
-                    .max_by_key(|root| root.as_os_str().len());
-                
-                if let Some(root) = matched {
-                    return Some(root.clone());
-                }
-                
-                // Auto-detect git root from file path
-                if let Some(git_root) = Self::find_git_root(&path) {
-                    info!("Auto-detected git root from URI: {}", git_root.display());
-                    return Some(git_root);
-                }
-            }
-        }
+    fn determine_root(&mut self, request: &JsonRpcRequest) -> Option<PathBuf> {
+        let uri = request.get_uri();
+        routing::determine_root(
+            &self.roots,
+            self.default_root.as_ref(),
+            &mut self.git_root_cache,
+            uri.as_deref(),
+        )
+    }
 
-        // Fall back to default root if configured
-        if let Some(ref root) = self.default_root {
-            return Some(root.clone());
-        }
-        
-        // Fall back to first known root
-        if !self.roots.is_empty() {
-            return Some(self.roots[0].clone());
-        }
-        
-        None
-    }
-    
-    /// Find git root by walking up from the given path
-    fn find_git_root(path: &Path) -> Option<PathBuf> {
-        let mut current = if path.is_file() {
-            path.parent()?.to_path_buf()
-        } else {
-            path.to_path_buf()
-        };
-        
-        loop {
-            let git_dir = current.join(".git");
-            if git_dir.exists() {
-                return Some(current);
-            }
-            
-            if !current.pop() {
-                break;
-            }
-        }
-        
-        None
-    }
 
     /// Get existing backend or create new one for the given root
     async fn get_or_create_backend(&mut self, root: PathBuf) -> Result<&mut BackendInstance, ProxyError> {
@@ -709,20 +677,11 @@ impl McpProxy {
             debug!("Flushing {} throttled file change events", event.paths.len());
             
             // Group paths by root for batch notifications
-            let mut paths_by_root: HashMap<PathBuf, Vec<String>> = HashMap::new();
-            
-            for path in &event.paths {
-                let root = self.roots.iter()
-                    .filter(|r| path.starts_with(r))
-                    .max_by_key(|r| r.as_os_str().len())
-                    .cloned()
-                    .or_else(|| self.default_root.clone());
-
-                if let Some(root) = root {
-                    let uri = format!("file:///{}", path.display().to_string().replace('\\', "/"));
-                    paths_by_root.entry(root).or_default().push(uri);
-                }
-            }
+            let paths_by_root = routing::group_paths_by_root(
+                &event.paths,
+                &self.roots,
+                self.default_root.as_ref(),
+            );
             
             // Send batch notification per root
             for (root, uris) in paths_by_root {
@@ -796,34 +755,6 @@ impl McpProxy {
         }
     }
 
-    /// Convert file URI to path (with URL decoding for special characters)
-    fn uri_to_path(uri: &str) -> Option<PathBuf> {
-        let decoded_uri = percent_decode_str(uri)
-            .decode_utf8()
-            .ok()?;
-        let uri = decoded_uri.as_ref();
-        
-        if uri.starts_with("file:///") {
-            #[cfg(windows)]
-            {
-                // file:///C:/path -> C:/path
-                let path = uri.strip_prefix("file:///")?;
-                Some(PathBuf::from(path.replace('/', "\\")))
-            }
-            #[cfg(not(windows))]
-            {
-                // file:///path -> /path
-                let path = uri.strip_prefix("file://")?;
-                Some(PathBuf::from(path))
-            }
-        } else if uri.starts_with("file://") {
-            let path = uri.strip_prefix("file://")?;
-            Some(PathBuf::from(path))
-        } else {
-            // Assume it's already a path
-            Some(PathBuf::from(uri))
-        }
-    }
 
     /// Get current metrics as a JSON value
     #[allow(dead_code)]

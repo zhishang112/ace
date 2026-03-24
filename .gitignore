@@ -3,3 +3,4 @@
 Cargo.lock
 *.log
 *.ps1
+stdin.txt

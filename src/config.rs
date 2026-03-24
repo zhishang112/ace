@@ -85,6 +85,10 @@ pub struct Config {
     /// Enable single instance lock (prevents multiple proxy instances)
     #[arg(long, default_value_t = false)]
     pub single_instance: bool,
+
+    /// Log format: "text" (default, human-readable) or "json" (structured, for log aggregation)
+    #[arg(long, default_value = "text", env = "MCP_PROXY_LOG_FORMAT")]
+    pub log_format: String,
 }
 
 impl Config {
@@ -144,6 +148,13 @@ impl Config {
             if !path.exists() {
                 warn!("Configured auggie_entry path does not exist: {}, falling back to auto-detect", path.display());
                 self.auggie_entry = None;
+            }
+        }
+        if let Some(ref path) = self.default_root {
+            if !path.exists() {
+                warn!("Configured default_root path does not exist: {}", path.display());
+            } else if !path.is_dir() {
+                warn!("Configured default_root is not a directory: {}", path.display());
             }
         }
         

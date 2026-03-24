@@ -5,6 +5,7 @@ mod backend;
 mod proxy;
 mod throttle;
 mod git_filter;
+mod routing;
 
 #[cfg(windows)]
 mod job_object;
@@ -15,7 +16,6 @@ mod process_group;
 use anyhow::Result;
 use clap::Parser;
 use tracing::{error, info, Level};
-use tracing_subscriber::FmtSubscriber;
 
 use config::Config;
 use proxy::McpProxy;
@@ -104,11 +104,8 @@ fn acquire_single_instance_lock() -> Result<SingleInstanceLock> {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let config = Config::parse();
-    
-    // Initialize logging
+/// Initialize logging based on config
+fn init_logging(config: &Config) {
     let log_level = match config.log_level.as_str() {
         "trace" => Level::TRACE,
         "debug" => Level::DEBUG,
@@ -117,12 +114,32 @@ async fn main() -> Result<()> {
         "error" => Level::ERROR,
         _ => Level::INFO,
     };
+
+    match config.log_format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .with_max_level(log_level)
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .json()
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_max_level(log_level)
+                .with_writer(std::io::stderr)
+                .with_ansi(false)
+                .init();
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let config = Config::parse();
     
-    FmtSubscriber::builder()
-        .with_max_level(log_level)
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+    // Initialize logging (supports text and JSON formats)
+    init_logging(&config);
 
     #[cfg(windows)]
     let _single_instance_mutex = if config.single_instance {

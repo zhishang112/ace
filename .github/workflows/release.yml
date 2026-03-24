@@ -17,6 +17,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       
+      - name: Run Tests
+        run: cargo test
+      
       - name: Build Release
         run: cargo build --release
       
@@ -33,6 +36,9 @@ jobs:
       
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+      
+      - name: Run Tests
+        run: cargo test
       
       - name: Build Release
         run: cargo build --release
@@ -54,6 +60,9 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       
+      - name: Run Tests
+        run: cargo test
+      
       - name: Build Release
         run: cargo build --release
       
@@ -73,6 +82,9 @@ jobs:
       
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+      
+      - name: Run Tests
+        run: cargo test
       
       - name: Build Release
         run: cargo build --release
@@ -105,7 +117,7 @@ jobs:
           chmod +x release/mcp-proxy-macos-* release/mcp-proxy-linux-*
       
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             release/mcp-proxy.exe

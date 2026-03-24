@@ -57,11 +57,11 @@ impl JobObject {
     /// Assign a child process to this job object by PID
     /// This is useful when we only have the process ID (e.g., from tokio::process::Child)
     pub fn assign_process_by_pid(&self, pid: u32) -> Result<(), ProxyError> {
-        use windows::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
         
         unsafe {
-            // Open handle to the process
-            let process_handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid)
+            // Open handle to the process - minimum permissions for AssignProcessToJobObject
+            let process_handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid)
                 .map_err(|e| ProxyError::JobObjectError(format!("OpenProcess failed for PID {}: {}", pid, e)))?;
             
             if process_handle.is_invalid() {
