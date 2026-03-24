@@ -18,7 +18,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       
       - name: Run Tests
-        run: cargo test --lib
+        run: cargo test --bin mcp-proxy
       
       - name: Build Release
         run: cargo build --release
@@ -38,7 +38,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       
       - name: Run Tests
-        run: cargo test --lib
+        run: cargo test --bin mcp-proxy
       
       - name: Build Release
         run: cargo build --release
@@ -61,7 +61,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       
       - name: Run Tests
-        run: cargo test --lib
+        run: cargo test --bin mcp-proxy
       
       - name: Build Release
         run: cargo build --release
@@ -84,7 +84,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       
       - name: Run Tests
-        run: cargo test --lib
+        run: cargo test --bin mcp-proxy
       
       - name: Build Release
         run: cargo build --release
